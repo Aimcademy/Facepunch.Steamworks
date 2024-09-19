@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Steamworks.Data
@@ -139,21 +140,45 @@ namespace Steamworks.Data
 
 		internal static async Task WaitForUserNames( LeaderboardEntry[] entries)
 		{
-			bool gotAll = false;
-			while ( !gotAll )
+			var tasks = new List<Task>();
+
+			foreach ( var entry in entries )
 			{
-				gotAll = true;
+				bool userHasNoId = entry.User.Id == 0;
+				if ( userHasNoId ) continue;
 
-				foreach ( var entry in entries )
-				{
-					if ( entry.User.Id == 0 ) continue;
-					if ( !SteamFriends.Internal.RequestUserInformation( entry.User.Id, true ) ) continue;
-
-					gotAll = false;
-				}
+				bool userInformationIsCached = !SteamFriends.Internal.RequestUserInformation( entry.User.Id, true );
+				if ( userInformationIsCached ) continue;
 
 				await Task.Delay( 1 );
+
+				tasks.Add( Task.Run( async () =>
+				{
+					using var cts = new CancellationTokenSource( TimeSpan.FromSeconds( 1 ) );
+
+					try
+					{
+						while ( true )
+						{
+							if ( cts.Token.IsCancellationRequested )
+								return;
+
+							string name = SteamFriends.Internal.GetFriendPersonaName( entry.User.Id );
+
+							if ( !string.IsNullOrEmpty( name ) && name != "[unknown]" )
+								break;
+
+							await Task.Delay( 100, cts.Token );
+						}
+					}
+					catch ( OperationCanceledException )
+					{
+						// Handle the cancellation silently
+					}
+				} ) );
 			}
+
+			await Task.WhenAll( tasks );
 		}
 		#endregion
 	}
